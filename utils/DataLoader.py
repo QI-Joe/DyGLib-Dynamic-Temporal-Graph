@@ -2,7 +2,11 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import random
 import pandas as pd
-
+from typing import Optional, Any
+from utils.my_dataloader import Temporal_Dataloader, data_load, Temporal_Splitting
+import torch 
+from numpy import ndarray
+import copy
 
 class CustomizedDataset(Dataset):
     def __init__(self, indices_list: list):
@@ -45,7 +49,8 @@ def get_idx_data_loader(indices_list: list, batch_size: int, shuffle: bool):
 
 class Data:
 
-    def __init__(self, src_node_ids: np.ndarray, dst_node_ids: np.ndarray, node_interact_times: np.ndarray, edge_ids: np.ndarray, labels: np.ndarray):
+    def __init__(self, src_node_ids: np.ndarray, dst_node_ids: np.ndarray, node_interact_times: np.ndarray, edge_ids: np.ndarray, labels: np.ndarray, \
+                hash_table: dict[int, int] = None, node_feat: Optional[ndarray|None] = None, edge_feat: Optional[ndarray|None] = None):
         """
         Data object to store the nodes interaction information.
         :param src_node_ids: ndarray
@@ -62,7 +67,55 @@ class Data:
         self.num_interactions = len(src_node_ids)
         self.unique_node_ids = set(src_node_ids) | set(dst_node_ids)
         self.num_unique_nodes = len(self.unique_node_ids)
+        self.node_feat = node_feat
+        self.edge_feat = edge_feat
+        self.hash_table = hash_table
+        
+        self.target_node: Optional[set|None] = None
+        self.seen_nodes: np.ndarray = None
 
+    def set_up_seen_nodes(self, seen_nodes: np.ndarray, indcutive_seen_nodes: np.ndarray):
+        """
+        set up the seen nodes
+        :param seen_nodes: np.ndarray, seen nodes
+        :param indcutive_seen_nodes: np.ndarray, inductive seen nodes
+        """
+        self.seen_nodes = seen_nodes
+        self.target_node = indcutive_seen_nodes
+
+def to_TPPR_Data(graph: Temporal_Dataloader) -> Data:
+    nodes = graph.x
+    edge_idx = np.arange(graph.edge_index.shape[1])
+    timestamp = graph.edge_attr
+    src, dest = graph.edge_index[0, :], graph.edge_index[1, :]
+    labels = graph.y
+
+    hash_dataframe = copy.deepcopy(graph.my_n_id.node.loc[:, ["index", "node"]].values.T)
+    
+    """
+    :param hash_table, should be a matching list, now here it is refreshed idx : origin idx,
+    """
+    hash_table: dict[int, int] = {idx: node for idx, node in zip(*hash_dataframe)}
+
+    edge_feat, node_feat = graph.edge_pos, graph.node_pos
+    TPPR_data = Data(sources= src, destinations=dest, timestamps=timestamp, edge_idxs = edge_idx, \
+                     labels=labels, hash_table=hash_table, node_feat=node_feat, edge_feat=edge_feat)
+
+    return TPPR_data
+
+def quantile_(threshold: float, timestamps: torch.Tensor) -> tuple[torch.Tensor]:
+    full_length = timestamps.shape[0]
+    val_idx = int(threshold*full_length)
+
+    if not isinstance(timestamps, torch.Tensor):
+        timestamps = torch.from_numpy(timestamps)
+    train_mask = torch.zeros_like(timestamps, dtype=bool)
+    train_mask[:val_idx] = True
+
+    val_mask = torch.zeros_like(timestamps, dtype=bool)
+    val_mask[val_idx:] = True
+
+    return train_mask, val_mask
 
 def get_link_prediction_data(dataset_name: str, val_ratio: float, test_ratio: float):
     """
@@ -74,9 +127,14 @@ def get_link_prediction_data(dataset_name: str, val_ratio: float, test_ratio: fl
             full_data, train_data, val_data, test_data, new_node_val_data, new_node_test_data, (Data object)
     """
     # Load data and train val test split
-    graph_df = pd.read_csv('./processed_data/{}/ml_{}.csv'.format(dataset_name, dataset_name))
-    edge_raw_features = np.load('./processed_data/{}/ml_{}.npy'.format(dataset_name, dataset_name))
-    node_raw_features = np.load('./processed_data/{}/ml_{}_node.npy'.format(dataset_name, dataset_name))
+    # graph_df = pd.read_csv('./processed_data/{}/ml_{}.csv'.format(dataset_name, dataset_name))
+    # edge_raw_features = np.load('./processed_data/{}/ml_{}.npy'.format(dataset_name, dataset_name))
+    # node_raw_features = np.load('./processed_data/{}/ml_{}_node.npy'.format(dataset_name, dataset_name))
+    snapshot, view = 10, 8
+
+    graph, idx_list = data_load(dataset=dataset_name, emb_size = 64)
+    edge_raw_features = graph.edge_pos
+    node_raw_features = graph.node_pos
 
     NODE_FEAT_DIM = EDGE_FEAT_DIM = 172
     assert NODE_FEAT_DIM >= node_raw_features.shape[1], f'Node feature dimension in dataset {dataset_name} is bigger than {NODE_FEAT_DIM}!'
@@ -88,19 +146,29 @@ def get_link_prediction_data(dataset_name: str, val_ratio: float, test_ratio: fl
     if edge_raw_features.shape[1] < EDGE_FEAT_DIM:
         edge_zero_padding = np.zeros((edge_raw_features.shape[0], EDGE_FEAT_DIM - edge_raw_features.shape[1]))
         edge_raw_features = np.concatenate([edge_raw_features, edge_zero_padding], axis=1)
+    
+    graph.edge_pos, graph.node_pos = edge_raw_features, node_raw_features
 
     assert NODE_FEAT_DIM == node_raw_features.shape[1] and EDGE_FEAT_DIM == edge_raw_features.shape[1], 'Unaligned feature dimensions after feature padding!'
-
+    graph_list = Temporal_Splitting(graph).temporal_splitting(time_mode="view", snapshot=snapshot, view = view)
+    
+    # number_of_views = len(graph_list)
+    # for idx in range(full_data-1):
+    temporal_graph = graph_list[0]
     # get the timestamp of validate and test set
-    val_time, test_time = list(np.quantile(graph_df.ts, [(1 - val_ratio - test_ratio), (1 - test_ratio)]))
-
-    src_node_ids = graph_df.u.values.astype(np.longlong)
-    dst_node_ids = graph_df.i.values.astype(np.longlong)
-    node_interact_times = graph_df.ts.values.astype(np.float64)
-    edge_ids = graph_df.idx.values.astype(np.longlong)
-    labels = graph_df.label.values
-
-    full_data = Data(src_node_ids=src_node_ids, dst_node_ids=dst_node_ids, node_interact_times=node_interact_times, edge_ids=edge_ids, labels=labels)
+    full_data = to_TPPR_Data(temporal_graph)
+    src_node_ids = full_data.src_node_ids.astype(np.longlong)
+    dst_node_ids = full_data.dst_node_ids.astype(np.longlong)
+    node_interact_times = full_data.node_interact_times.astype(np.float64)
+    edge_ids = full_data.edge_ids.astype(np.longlong)
+    labels = full_data.labels.values
+    
+    train_mask, val_mask = quantile_(0.80, timestamps=node_interact_times)
+    val_time = np.quantile(node_interact_times, 0.85)
+    
+    if dataset_name in ["dblp", "tmall"]:
+        spans, span_freq = np.unique(node_interact_times, return_counts=True)
+        if val_time == spans[-1]: val_time = spans[int(spans.shape[0]*0.8)]
 
     # the setting of seed follows previous works
     random.seed(2020)
@@ -110,6 +178,8 @@ def get_link_prediction_data(dataset_name: str, val_ratio: float, test_ratio: fl
     num_total_unique_node_ids = len(node_set)
 
     # compute nodes which appear at test time
+    t1_temporal = graph_list[0+1]
+    
     test_node_set = set(src_node_ids[node_interact_times > val_time]).union(set(dst_node_ids[node_interact_times > val_time]))
     # sample nodes which we keep as new nodes (to test inductiveness), so then we have to remove all their edges from training
     new_test_node_set = set(random.sample(test_node_set, int(0.1 * num_total_unique_node_ids)))

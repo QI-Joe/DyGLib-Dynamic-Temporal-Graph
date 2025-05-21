@@ -116,5 +116,7 @@ processed_data/*/*
 
 figures/
 logs/
-test.py
+test_code.py
 *.ipynb
+saved_models/
+__pycache__/

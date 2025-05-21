@@ -16,7 +16,7 @@ from utils.utils import NegativeEdgeSampler, NeighborSampler
 from utils.DataLoader import Data
 
 
-def evaluate_model_link_prediction(model_name: str, model: nn.Module, neighbor_sampler: NeighborSampler, evaluate_idx_data_loader: DataLoader,
+def evaluate_model_link_prediction(model_name: str, model: list[nn.Module], neighbor_sampler: NeighborSampler, evaluate_idx_data_loader: DataLoader,
                                    evaluate_neg_edge_sampler: NegativeEdgeSampler, evaluate_data: Data, loss_func: nn.Module,
                                    num_neighbors: int = 20, time_gap: int = 2000):
     """

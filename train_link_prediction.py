@@ -31,39 +31,42 @@ if __name__ == "__main__":
 
     # get arguments
     args = get_link_prediction_args(is_evaluation=False)
+    SNAPSHOT = args.num_runs
 
     # get data for training, validation and testing
-    node_raw_features, edge_raw_features, full_data, train_data, val_data, test_data, new_node_val_data, new_node_test_data = \
-        get_link_prediction_data(dataset_name=args.dataset_name, val_ratio=args.val_ratio, test_ratio=args.test_ratio)
-
-    # initialize training neighbor sampler to retrieve temporal graph
-    train_neighbor_sampler = get_neighbor_sampler(data=train_data, sample_neighbor_strategy=args.sample_neighbor_strategy,
-                                                  time_scaling_factor=args.time_scaling_factor, seed=0)
-
-    # initialize validation and test neighbor sampler to retrieve temporal graph
-    full_neighbor_sampler = get_neighbor_sampler(data=full_data, sample_neighbor_strategy=args.sample_neighbor_strategy,
-                                                 time_scaling_factor=args.time_scaling_factor, seed=1)
-
-    # initialize negative samplers, set seeds for validation and testing so negatives are the same across different runs
-    # in the inductive setting, negatives are sampled only amongst other new nodes
-    # train negative edge sampler does not need to specify the seed, but evaluation samplers need to do so
-    train_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=train_data.src_node_ids, dst_node_ids=train_data.dst_node_ids)
-    val_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=full_data.src_node_ids, dst_node_ids=full_data.dst_node_ids, seed=0)
-    new_node_val_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=new_node_val_data.src_node_ids, dst_node_ids=new_node_val_data.dst_node_ids, seed=1)
-    test_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=full_data.src_node_ids, dst_node_ids=full_data.dst_node_ids, seed=2)
-    new_node_test_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=new_node_test_data.src_node_ids, dst_node_ids=new_node_test_data.dst_node_ids, seed=3)
-
-    # get data loaders
-    train_idx_data_loader = get_idx_data_loader(indices_list=list(range(len(train_data.src_node_ids))), batch_size=args.batch_size, shuffle=False)
-    val_idx_data_loader = get_idx_data_loader(indices_list=list(range(len(val_data.src_node_ids))), batch_size=args.batch_size, shuffle=False)
-    new_node_val_idx_data_loader = get_idx_data_loader(indices_list=list(range(len(new_node_val_data.src_node_ids))), batch_size=args.batch_size, shuffle=False)
-    test_idx_data_loader = get_idx_data_loader(indices_list=list(range(len(test_data.src_node_ids))), batch_size=args.batch_size, shuffle=False)
-    new_node_test_idx_data_loader = get_idx_data_loader(indices_list=list(range(len(new_node_test_data.src_node_ids))), batch_size=args.batch_size, shuffle=False)
+    node_raw_features, edge_raw_features, data_list = \
+        get_link_prediction_data(dataset_name=args.dataset_name, snapshot=SNAPSHOT, val_ratio=args.val_ratio, test_ratio=args.test_ratio)
 
     val_metric_all_runs, new_node_val_metric_all_runs, test_metric_all_runs, new_node_test_metric_all_runs = [], [], [], []
 
-    for run in range(args.num_runs):
+    for run in range(1):
+        full_data, train_data, val_data, test_data, new_node_val_data, new_node_test_data = data_list[run]
+        # initialize training neighbor sampler to retrieve temporal graph
+        train_neighbor_sampler = get_neighbor_sampler(data=train_data, sample_neighbor_strategy=args.sample_neighbor_strategy,
+                                                    time_scaling_factor=args.time_scaling_factor, seed=0)
 
+        # initialize validation and test neighbor sampler to retrieve temporal graph
+        full_neighbor_sampler = get_neighbor_sampler(data=full_data, sample_neighbor_strategy=args.sample_neighbor_strategy,
+                                                    time_scaling_factor=args.time_scaling_factor, seed=1)
+
+        test_full_neighbor_sampler = get_neighbor_sampler(data=test_data, sample_neighbor_strategy=args.sample_neighbor_strategy,
+                                                         time_scaling_factor=args.time_scaling_factor, seed=2)
+        # initialize negative samplers, set seeds for validation and testing so negatives are the same across different runs
+        # in the inductive setting, negatives are sampled only amongst other new nodes
+        # train negative edge sampler does not need to specify the seed, but evaluation samplers need to do so
+        train_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=train_data.src_node_ids, dst_node_ids=train_data.dst_node_ids)
+        val_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=full_data.src_node_ids, dst_node_ids=full_data.dst_node_ids, seed=0)
+        new_node_val_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=new_node_val_data.src_node_ids, dst_node_ids=new_node_val_data.dst_node_ids, seed=1)
+        test_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=test_data.src_node_ids, dst_node_ids=test_data.dst_node_ids, seed=2)
+        new_node_test_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=new_node_test_data.src_node_ids, dst_node_ids=new_node_test_data.dst_node_ids, seed=3)
+
+        # get data loaders
+        train_idx_data_loader = get_idx_data_loader(indices_list=list(range(len(train_data.src_node_ids))), batch_size=args.batch_size, shuffle=False)
+        val_idx_data_loader = get_idx_data_loader(indices_list=list(range(len(val_data.src_node_ids))), batch_size=args.batch_size, shuffle=False)
+        new_node_val_idx_data_loader = get_idx_data_loader(indices_list=list(range(len(new_node_val_data.src_node_ids))), batch_size=args.batch_size, shuffle=False)
+        test_idx_data_loader = get_idx_data_loader(indices_list=list(range(len(test_data.src_node_ids))), batch_size=args.batch_size, shuffle=False)
+        new_node_test_idx_data_loader = get_idx_data_loader(indices_list=list(range(len(new_node_test_data.src_node_ids))), batch_size=args.batch_size, shuffle=False)
+        
         set_random_seed(seed=run)
 
         args.seed = run
@@ -283,6 +286,7 @@ if __name__ == "__main__":
                 # reload training memory bank for new validation nodes
                 model[0].memory_bank.reload_memory_bank(train_backup_memory_bank)
 
+            # print(new_node_val_data.src_node_ids.max(), new_node_val_data.dst_node_ids.max())
             new_node_val_losses, new_node_val_metrics = evaluate_model_link_prediction(model_name=args.model_name,
                                                                                        model=model,
                                                                                        neighbor_sampler=full_neighbor_sampler,
@@ -312,7 +316,7 @@ if __name__ == "__main__":
             if (epoch + 1) % args.test_interval_epochs == 0:
                 test_losses, test_metrics = evaluate_model_link_prediction(model_name=args.model_name,
                                                                            model=model,
-                                                                           neighbor_sampler=full_neighbor_sampler,
+                                                                           neighbor_sampler=test_full_neighbor_sampler,
                                                                            evaluate_idx_data_loader=test_idx_data_loader,
                                                                            evaluate_neg_edge_sampler=test_neg_edge_sampler,
                                                                            evaluate_data=test_data,
@@ -326,7 +330,7 @@ if __name__ == "__main__":
 
                 new_node_test_losses, new_node_test_metrics = evaluate_model_link_prediction(model_name=args.model_name,
                                                                                              model=model,
-                                                                                             neighbor_sampler=full_neighbor_sampler,
+                                                                                             neighbor_sampler=test_full_neighbor_sampler,
                                                                                              evaluate_idx_data_loader=new_node_test_idx_data_loader,
                                                                                              evaluate_neg_edge_sampler=new_node_test_neg_edge_sampler,
                                                                                              evaluate_data=new_node_test_data,
@@ -389,7 +393,7 @@ if __name__ == "__main__":
 
         test_losses, test_metrics = evaluate_model_link_prediction(model_name=args.model_name,
                                                                    model=model,
-                                                                   neighbor_sampler=full_neighbor_sampler,
+                                                                   neighbor_sampler=test_full_neighbor_sampler,
                                                                    evaluate_idx_data_loader=test_idx_data_loader,
                                                                    evaluate_neg_edge_sampler=test_neg_edge_sampler,
                                                                    evaluate_data=test_data,
@@ -403,7 +407,7 @@ if __name__ == "__main__":
 
         new_node_test_losses, new_node_test_metrics = evaluate_model_link_prediction(model_name=args.model_name,
                                                                                      model=model,
-                                                                                     neighbor_sampler=full_neighbor_sampler,
+                                                                                     neighbor_sampler=test_full_neighbor_sampler,
                                                                                      evaluate_idx_data_loader=new_node_test_idx_data_loader,
                                                                                      evaluate_neg_edge_sampler=new_node_test_neg_edge_sampler,
                                                                                      evaluate_data=new_node_test_data,

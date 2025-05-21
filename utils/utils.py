@@ -138,7 +138,12 @@ class NeighborSampler:
         """
         # return index i, which satisfies list[i - 1] < v <= list[i]
         # return 0 for the first position in self.nodes_neighbor_times since the value at the first position is empty
-        i = np.searchsorted(self.nodes_neighbor_times[node_id], interact_time)
+        try:
+            i = np.searchsorted(self.nodes_neighbor_times[node_id], interact_time)
+        except IndexError:
+            print(f"Node {node_id} not found in the adjacency list.")
+            raise IndexError("Node not found in the adjacency list.")
+            
 
         if return_sampled_probabilities:
             return self.nodes_neighbor_ids[node_id][:i], self.nodes_edge_ids[node_id][:i], self.nodes_neighbor_times[node_id][:i], \

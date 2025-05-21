@@ -62,7 +62,7 @@ class Imbalance(object):
         
         return train_mask, val_mask, nn_val_mask
     
-    def test_processing(self, t1_data: Temporal_Dataloader):
+    def test_processing(self, t1_data: Temporal_Dataloader, new_test_msak: Optional[ndarray | None] = None):
         """
         :return: inductive test mask for unseen nodes in src edges
         """
@@ -75,11 +75,12 @@ class Imbalance(object):
         
         
 class Few_Shot_Learning(object):
-    def __init__(self, fsl_num: int, val_ratio: Optional[float|None] = None, *args, **kwargs):
+    def __init__(self, fsl_num: int, val_time: Optional[float|None] = None, src_label: Optional[np.ndarray|Any] = None, *args, **kwargs):
         super(Few_Shot_Learning, self).__init__(*args, **kwargs)
         self.fsl_num = fsl_num
         self.seen_node: ndarray = None
-        self.val_ratio = val_ratio # val_ratio here equals val_ratio + train_ratio
+        self.val_time = val_time # val_ratio here equals val_ratio + train_ratio
+        self.src_label: Optional[np.ndarray | Any] = src_label
         
     def __call__(self, data: Temporal_Dataloader, *args, **kwds):
         """
@@ -90,28 +91,33 @@ class Few_Shot_Learning(object):
         Note that few shot learning will no longer consider the train_val split, \n
         considering limited training data
         """
-        node_num, label = data.num_nodes, data.y.cpu().numpy() if isinstance(data.y, torch.Tensor) else data.y
-        uniquclss, uniqunum = np.unique(label, return_counts=True)
+        # node_num, label = data.num_nodes, data.y.cpu().numpy() if isinstance(data.y, torch.Tensor) else data.y
+        # uniquclss, uniqunum = np.unique(label, return_counts=True)
+        src_unique_label, src_unique_num_label = np.unique(self.src_label, return_counts=True)
+        
         training_data, node_match_list = [], data.my_n_id.node.values # "index", "original node idx", "label"
         src = data.edge_index[0].cpu().numpy() if isinstance(data.edge_index, torch.Tensor) else data.edge_index[0]
         data_interact_times = data.edge_attr.cpu().numpy() if isinstance(data.edge_attr, torch.Tensor) else data.edge_attr
         
-        for cls in uniquclss:
-            class_indices = np.where(label == cls)[0]
+        for cls in src_unique_label:
+            class_indices = np.where(self.src_label == cls)[0]
             np.random.shuffle(class_indices)
             
             num_samples = min(self.fsl_num, len(class_indices))
             current_cls_selelcted_indices = class_indices[: num_samples]
             training_data.extend(current_cls_selelcted_indices)
-            
-        # self.seen_node_with_val = node_match_list[training_data, 1] # training data could direct retrieve on match list index to locate original node idx
-        train_mask = np.isin(src, training_data)
-        val_mask = data_interact_times>self.val_ratio
+        
+        print(f"Few shot learning: {self.fsl_num}, training data: {len(training_data)}, uniqu classes: {src_unique_label.shape[0]}")
+        train_mask = np.zeros(src.shape, dtype=bool)
+        train_mask[training_data] = True
+        
+        val_mask = data_interact_times>self.val_time
         nn_val_mask = ~train_mask
-        self.seen_node = training_data
+        
+        self.seen_node = src[training_data]
         return train_mask, val_mask, nn_val_mask
     
-    def test_processing(self, t1_data: Temporal_Dataloader):
+    def test_processing(self, t1_data: Temporal_Dataloader, new_test_msak: Optional[ndarray | None] = None):
         t1_edge_index = t1_data.edge_index
         if isinstance(t1_data.edge_index, torch.Tensor):
             t1_edge_index = t1_data.edge_index.cpu().numpy()
@@ -157,9 +163,11 @@ class Edge_Distrub(object):
         
         return retained_edges, retained_tmp
     
-    def test_processing(self, t1_data: Temporal_Dataloader):
+    def test_processing(self, t1_data: Temporal_Dataloader, new_test_msak: Optional[ndarray | None] = None):
         """
         :funtionality: No specific utility meaning, only to align with structure with that of Imbalance and FSL 
         :return: unmodified t1_data
         """
-        return t1_data
+        if (new_test_msak).all() != None:
+            return new_test_msak
+        raise ValueError("The new_test_mask should not be None")

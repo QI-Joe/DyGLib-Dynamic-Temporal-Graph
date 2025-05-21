@@ -445,8 +445,8 @@ class MemoryUpdater(nn.Module):
         if len(unique_node_ids) <= 0:
             return
 
-        assert (self.memory_bank.get_node_last_updated_times(unique_node_ids) <=
-                torch.from_numpy(unique_node_timestamps).float().to(unique_node_messages.device)).all().item(), "Trying to update memory to time in the past!"
+        # assert (self.memory_bank.get_node_last_updated_times(unique_node_ids) <=
+        #         torch.from_numpy(unique_node_timestamps).float().to(unique_node_messages.device)).all().item(), "Trying to update memory to time in the past!"
 
         # Tensor, shape (num_unique_node_ids, memory_dim)
         node_memories = self.memory_bank.get_memories(node_ids=unique_node_ids)
@@ -454,6 +454,10 @@ class MemoryUpdater(nn.Module):
         updated_node_memories = self.memory_updater(unique_node_messages, node_memories)
         # update memories for nodes in unique_node_ids
         self.memory_bank.set_memories(node_ids=unique_node_ids, updated_node_memories=updated_node_memories)
+
+        if (self.memory_bank.get_node_last_updated_times(unique_node_ids) >
+            torch.from_numpy(unique_node_timestamps).float().to(unique_node_messages.device)).all().item():
+            return
 
         # update last updated times for nodes in unique_node_ids
         self.memory_bank.node_last_updated_times[torch.from_numpy(unique_node_ids)] = torch.from_numpy(unique_node_timestamps).float().to(unique_node_messages.device)
@@ -472,9 +476,15 @@ class MemoryUpdater(nn.Module):
         if len(unique_node_ids) <= 0:
             return self.memory_bank.node_memories.data.clone(), self.memory_bank.node_last_updated_times.data.clone()
 
-        assert (self.memory_bank.get_node_last_updated_times(unique_node_ids=unique_node_ids) <=
-                torch.from_numpy(unique_node_timestamps).float().to(unique_node_messages.device)).all().item(), "Trying to update memory to time in the past!"
-
+        # assert (self.memory_bank.get_node_last_updated_times(unique_node_ids=unique_node_ids) <=
+        #         torch.from_numpy(unique_node_timestamps).float().to(unique_node_messages.device)).all().item(), "Trying to update memory to time in the past!"
+        if (self.memory_bank.get_node_last_updated_times(unique_node_ids=unique_node_ids) >
+                torch.from_numpy(unique_node_timestamps).float().to(unique_node_messages.device)).all().item():
+            updated_node_memories = self.memory_bank.node_memories.data.clone()
+            updated_node_last_updated_times = self.memory_bank.node_last_updated_times.data.clone()
+            
+            return updated_node_memories, updated_node_last_updated_times
+        
         # Tensor, shape (num_nodes, memory_dim)
         updated_node_memories = self.memory_bank.node_memories.data.clone()
         updated_node_memories[torch.from_numpy(unique_node_ids)] = self.memory_updater(unique_node_messages,

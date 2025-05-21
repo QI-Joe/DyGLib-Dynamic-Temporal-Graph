@@ -460,7 +460,7 @@ class Temporal_Splitting(object):
             subpos = (nodepos[self.n_id.sample_idx(sampled_nodes)], edgepos[sample_time])
 
             temporal_subgraph = Temporal_Dataloader(nodes=sampled_nodes, edge_index=sampled_edges, \
-                edge_attr=edge_attr[sample_time], y=y, pos=subpos).get_Temporalgraph()
+                edge_attr=edge_attr[sample_time], y=y, pos=subpos) # .get_Temporalgraph()
             
             temporal_subgraphs.append(temporal_subgraph)
 
@@ -541,7 +541,7 @@ def load_mooc(path:str=None) -> Tuple[pd.DataFrame]:
     return general, feat, edge_label
 
 def edge_load_mooc(dataset:str):
-    auto_path = r"../../TestProejct/Temporal_Dataset/act-mooc/act-mooc"
+    auto_path = r"../TestProject/Temporal_Dataset/act-mooc/act-mooc"
     edge, feat, label = load_mooc(auto_path)
     # for edge, its column idx is listed as ["ACTIONID", "USERID", "TARGETID", "TIMESTAMP"]
     edge = edge.values
@@ -608,19 +608,20 @@ def get_dataset(path, name: str):
 
     return (CitationFull if name == 'dblp' else Planetoid)(osp.join(root_path, 'Citation'), name, transform=T.NormalizeFeatures())
 
-def load_standard(dataset: str, *wargs) -> tuple[Data, NodeIdxMatching]:
+def load_standard(dataset: str, **wargs) -> tuple[Data, NodeIdxMatching]:
     
     path = osp.expanduser('~/datasets')
     path = osp.join(path, dataset)
     dataset = get_dataset(path, dataset)
     return dataset
 
-def load_static_dataset(path: str = None, dataset: str = "mathoverflow", fea_dim: int = 64, *wargs) -> tuple[Temporal_Dataloader, NodeIdxMatching]:
+def load_static_dataset(path: str = None, dataset: str = "mathoverflow", emb_size: int = 64, **wargs) -> tuple[Temporal_Dataloader, NodeIdxMatching]:
     """
     Now this txt file only limited to loading data in from mathoverflow datasets
     path: (path, last three words of dataset) -> (str, str) e.g. ('data/mathoverflow/sx-mathoverflow-a2q.txt', 'a2q')
     node Idx of mathoverflow is not consistent!
     """
+    fea_dim = emb_size
     if dataset[-8:] == "overflow" or dataset == "askubuntu":
         edges, label = load_static_overflow(dataset) if not path else load_static_overflow(dataset, path)
     elif dataset == "dblp":

@@ -1,5 +1,5 @@
 import torch
-from sklearn.metrics import average_precision_score, roc_auc_score
+from sklearn.metrics import average_precision_score, roc_auc_score, accuracy_score, f1_score, precision_score, recall_score
 
 
 def get_link_prediction_metrics(predicts: torch.Tensor, labels: torch.Tensor):
@@ -30,6 +30,11 @@ def get_node_classification_metrics(predicts: torch.Tensor, labels: torch.Tensor
     predicts = predicts.cpu().detach().numpy()
     labels = labels.cpu().numpy()
 
-    roc_auc = roc_auc_score(y_true=labels, y_score=predicts)
+    roc_auc = roc_auc_score(y_true=labels, y_score=predicts, multi_class='ovr')
+    accuracy = accuracy_score(y_true=labels, y_pred=predicts)
+    f1 = f1_score(y_true=labels, y_pred=predicts, average='macro')
+    precision = precision_score(y_true=labels, y_pred=predicts, average='macro')
+    recall = recall_score(y_true=labels, y_pred=predicts, average='macro')
 
-    return {'roc_auc': roc_auc}
+    return {'roc_auc': roc_auc, 'accuracy': accuracy, 'f1': f1,
+            'precision': precision, 'recall': recall}

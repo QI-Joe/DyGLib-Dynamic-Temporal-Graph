@@ -9,6 +9,7 @@ import shutil
 import json
 import torch
 import torch.nn as nn
+from torch.nn import functional as F
 
 from models.TGAT import TGAT
 from models.MemoryModel import MemoryModel, compute_src_dst_node_time_shifts
@@ -16,7 +17,7 @@ from models.CAWN import CAWN
 from models.TCL import TCL
 from models.GraphMixer import GraphMixer
 from models.DyGFormer import DyGFormer
-from models.modules import MergeLayer, MLPClassifier
+from models.modules import MergeLayer, MLPClassifier_node
 from utils.utils import set_random_seed, convert_to_gpu, get_parameter_sizes, create_optimizer
 from utils.utils import get_neighbor_sampler
 from evaluate_models_utils import evaluate_model_node_classification
@@ -31,13 +32,15 @@ if __name__ == "__main__":
 
     # get arguments
     args = get_node_classification_args()
-
+    SNAPSHOT = args.num_runs
+    rb_task, ratio = args.rb_task, args.ratio
     # get data for training, validation and testing
-    node_raw_features, edge_raw_features, data_list = \
-        get_node_classification_data(dataset_name=args.dataset_name, val_ratio=args.val_ratio)
+    node_cls, node_raw_features, edge_raw_features, data_list = \
+        get_node_classification_data(dataset_name=args.dataset_name, task=rb_task, ratio=ratio, snapshot=SNAPSHOT, val_ratio=args.val_ratio)
     val_metric_all_runs, test_metric_all_runs, new_test_metrics_all_runs = [], [], []
-
-    for run in range(args.num_runs):
+    node_cls_num = node_cls.shape[0]
+    views = len(data_list)
+    for run in range(views):
         full_data, train_data, val_data, test_data, new_val, new_test = data_list[run]
         
         # initialize validation and test neighbor sampler to retrieve temporal graph
@@ -116,23 +119,25 @@ if __name__ == "__main__":
             raise ValueError(f"Wrong value for model_name {args.model_name}!")
         link_predictor = MergeLayer(input_dim1=node_raw_features.shape[1], input_dim2=node_raw_features.shape[1],
                                     hidden_dim=node_raw_features.shape[1], output_dim=1)
-        model = nn.Sequential(dynamic_backbone, link_predictor)
+        # model = nn.Sequential(dynamic_backbone, link_predictor)
 
         # load the saved model in the link prediction task
         load_model_folder = f"./saved_models/{args.model_name}/{args.dataset_name}/{args.load_model_name}"
         early_stopping = EarlyStopping(patience=0, save_model_folder=load_model_folder,
                                        save_model_name=args.load_model_name, logger=logger, model_name=args.model_name)
-        early_stopping.load_checkpoint(model, map_location='cpu')
+        # early_stopping.load_checkpoint(model, map_location='cpu')
 
         # create the model for the node classification task
-        node_classifier = MLPClassifier(input_dim=node_raw_features.shape[1], dropout=args.dropout)
-        model = nn.Sequential(model[0], node_classifier)
+        node_classifier = MLPClassifier_node(input_dim=node_raw_features.shape[1], output_dim=node_cls_num, dropout=args.dropout)
+        model = nn.Sequential(dynamic_backbone, node_classifier)
         logger.info(f'model -> {model}')
         logger.info(f'model name: {args.model_name}, #parameters: {get_parameter_sizes(model) * 4} B, '
                     f'{get_parameter_sizes(model) * 4 / 1024} KB, {get_parameter_sizes(model) * 4 / 1024 / 1024} MB.')
 
         # follow previous work, we freeze the dynamic_backbone and only optimize the node_classifier
-        optimizer = create_optimizer(model=model[1], optimizer_name=args.optimizer, learning_rate=args.learning_rate, weight_decay=args.weight_decay)
+        for param in model[0].parameters():
+            param.requires_grad = True
+        optimizer = create_optimizer(model=model, optimizer_name=args.optimizer, learning_rate=args.learning_rate, weight_decay=args.weight_decay)
 
         model = convert_to_gpu(model, device=args.device)
         # put the node raw messages of memory-based models on device
@@ -150,14 +155,15 @@ if __name__ == "__main__":
         early_stopping = EarlyStopping(patience=args.patience, save_model_folder=save_model_folder,
                                        save_model_name=args.save_model_name, logger=logger, model_name=args.model_name)
 
-        loss_func = nn.BCELoss()
+        loss_func = nn.CrossEntropyLoss()
 
         # set the dynamic_backbone in evaluation mode
-        model[0].eval()
+        # model[0].eval()
+        # model[0].train()
 
         for epoch in range(args.num_epochs):
 
-            model[1].train()
+            model.train()
             if args.model_name in ['DyRep', 'TGAT', 'TGN', 'CAWN', 'TCL', 'GraphMixer', 'DyGFormer']:
                 # training process, set the neighbor sampler
                 model[0].set_neighbor_sampler(full_neighbor_sampler)
@@ -174,7 +180,8 @@ if __name__ == "__main__":
                     train_data.src_node_ids[train_data_indices], train_data.dst_node_ids[train_data_indices], train_data.node_interact_times[train_data_indices], \
                     train_data.edge_ids[train_data_indices], train_data.labels[train_data_indices]
 
-                with torch.no_grad():
+                # with torch.no_grad():
+                if True:
                     if args.model_name in ['TGAT', 'CAWN', 'TCL']:
                         # get temporal embedding of source and destination nodes
                         # two Tensors, with shape (batch_size, node_feat_dim)
@@ -212,11 +219,12 @@ if __name__ == "__main__":
                     else:
                         raise ValueError(f"Wrong value for model_name {args.model_name}!")
                 # get predicted probabilities, shape (batch_size, )
-                predicts = model[1](x=batch_src_node_embeddings).squeeze(dim=-1).sigmoid()
-                labels = torch.from_numpy(batch_labels).float().to(predicts.device)
+                src_predicts = model[1](x=batch_src_node_embeddings) # .squeeze(dim=-1).sigmoid()
+                dst_predicts = model[1](x=batch_dst_node_embeddings) 
+                predicts = F.softmax(torch.hstack([src_predicts, dst_predicts]), dim=-1)
+                labels = torch.from_numpy(batch_labels).to(predicts.device)
 
                 loss = loss_func(input=predicts, target=labels)
-
                 train_total_loss += loss.item()
 
                 train_y_trues.append(labels)
@@ -280,8 +288,8 @@ if __name__ == "__main__":
                                                                                                time_gap=args.time_gap)
 
                 logger.info(f'test loss: {test_total_loss:.4f}')
-                for metric_name in test_metrics.keys():
-                    logger.info(f'test {metric_name}, {test_metrics[metric_name]:.4f}')
+                for metric_name in new_node_test_metrics.keys():
+                    logger.info(f'new node test {metric_name}, {new_node_test_metrics[metric_name]:.4f}')
                 for metric_name in new_node_test_metrics.keys():
                     logger.info(f'new node test {metric_name}, {test_metrics[metric_name]:.4f}')
 
@@ -386,9 +394,10 @@ if __name__ == "__main__":
             }
         result_json = json.dumps(result_json, indent=4)
 
-        save_result_folder = f"./saved_results/{args.model_name}/{args.dataset_name}"
+        save_result_folder = f"./saved_results/{args.model_name}/{args.dataset_name}/{rb_task}"
         os.makedirs(save_result_folder, exist_ok=True)
-        save_result_path = os.path.join(save_result_folder, f"{args.save_model_name}.json")
+        json_file_name = f"node_classification_{args.model_name}_seed{args.seed}_{ratio}_{views}"
+        save_result_path = os.path.join(save_result_folder, f"{json_file_name}.json")
 
         with open(save_result_path, 'w') as file:
             file.write(result_json)

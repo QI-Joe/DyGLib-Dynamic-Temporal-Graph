@@ -120,3 +120,4 @@ test_code.py
 *.ipynb
 saved_models/
 __pycache__/
+saved_result/

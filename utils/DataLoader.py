@@ -7,7 +7,7 @@ from utils.my_dataloader import Temporal_Dataloader, data_load, Temporal_Splitti
 import torch 
 from numpy import ndarray
 import copy
-from utils.robustness_injection import Imbalance, Few_Shot_Learning, Edge_Distrub
+from utils.robustness_injection import Imbalance, Few_Shot_Learning, Edge_Distrub, Imbalance_full
 
 class CustomizedDataset(Dataset):
     def __init__(self, indices_list: list):
@@ -248,10 +248,10 @@ def get_link_prediction_data(dataset_name: str, snapshot: int, val_ratio: float 
             val_data.num_interactions, val_data.num_unique_nodes, val_data.num_interactions / full_data.num_interactions))
         print("The test dataset has {} interactions, involving {} different nodes".format(
             test_data.num_interactions, test_data.num_unique_nodes))
-        print("The new node validation dataset has {} interactions, involving {} different nodes".format(
-            new_node_val_data.num_interactions, new_node_val_data.num_unique_nodes))
-        print("The new node test dataset has {} interactions, involving {} different nodes".format(
-            new_node_test_data.num_interactions, new_node_test_data.num_unique_nodes))
+        print("The new node validation dataset has {} interactions, involving {} different nodes, with nn_val/validation ratio {:.4f}".format(
+            new_node_val_data.num_interactions, new_node_val_data.num_unique_nodes, new_node_val_data.num_interactions / full_data.num_interactions))
+        print("The new node test dataset has {} interactions, involving {} different nodes, with nn_test/(test-full_data) interaction ratio {:.4f}".format(
+            new_node_test_data.num_interactions, new_node_test_data.num_unique_nodes, new_node_test_data.num_interactions / (test_data.num_interactions - full_data.num_interactions)))
         print("{} nodes were used for the inductive testing, i.e. are never seen during training\n\n".format(len(t1_new_node_set)))
 
     return node_raw_features, edge_raw_features, Data_list # full_data, train_data, val_data, test_data, new_node_val_data, new_node_test_data
@@ -275,6 +275,7 @@ def get_node_classification_data(dataset_name: str, snapshot: int, task:str, rat
 
     graph, idx_list = data_load(dataset=dataset_name, emb_size = 64)
     node_raw_features, edge_raw_features = graph.pos
+    node_cls_num = np.unique(graph.y)
 
     NODE_FEAT_DIM = EDGE_FEAT_DIM = 172
     assert NODE_FEAT_DIM >= node_raw_features.shape[1], f'Node feature dimension in dataset {dataset_name} is bigger than {NODE_FEAT_DIM}!'
@@ -313,6 +314,8 @@ def get_node_classification_data(dataset_name: str, snapshot: int, task:str, rat
         # transform the node ids to the refreshed, consistent node ids
         new_old_node_match4label = np.vectorize(hash_table.get)(src_node_ids)
         src_labels = labels[new_old_node_match4label]
+        new_old_node_match4label_dst = np.vectorize(hash_table.get)(dst_node_ids)
+        dst_labels = labels[new_old_node_match4label_dst]
         
         val_time = span_time_quantile(threshold=val_ratio, tsp=node_interact_times, dataset=dataset_name)
 
@@ -328,6 +331,7 @@ def get_node_classification_data(dataset_name: str, snapshot: int, task:str, rat
         elif task == "fsl":
             transformer = Few_Shot_Learning(fsl_num=ratio, val_time=val_time, src_label=src_labels)
             seen_label_train_mask, seen_label_val_mask, seen_label_nn_val_mask = transformer(temporal_graph)
+            train_mask, val_mask, nn_val_mask = seen_label_train_mask, seen_label_val_mask, seen_label_nn_val_mask
 
         train_data = Data(src_node_ids=src_node_ids[train_mask], dst_node_ids=dst_node_ids[train_mask],
                         node_interact_times=node_interact_times[train_mask],
@@ -357,12 +361,13 @@ def get_node_classification_data(dataset_name: str, snapshot: int, task:str, rat
             new_test_mask = transformer.test_processing(graph_list[idx+1], new_test_mask)
         elif task == "fsl":
             seen_test_label_mask = transformer.test_processing(graph_list[idx+1], new_test_mask)
+            new_test_mask = seen_test_label_mask
         new_test_data = Data(src_node_ids=test_data.src_node_ids[new_test_mask], dst_node_ids=test_data.dst_node_ids[new_test_mask],
                         node_interact_times=test_data.node_interact_times[new_test_mask], edge_ids=test_data.edge_ids[new_test_mask], 
                         hash_table=test_data.hash_table, labels=test_src_labels[new_test_mask], true_seen_label_mask = seen_test_label_mask)
 
         Data_list.append([full_data, train_data, val_data, test_data, new_val_data, new_test_data])
-    return node_raw_features, edge_raw_features, Data_list
+    return node_cls_num, node_raw_features, edge_raw_features, Data_list
 
 def quantile_(threshold: float, timestamps: torch.Tensor) -> tuple[torch.Tensor]:
     full_length = timestamps.shape[0]
@@ -377,3 +382,134 @@ def quantile_(threshold: float, timestamps: torch.Tensor) -> tuple[torch.Tensor]
     val_mask[val_idx:] = True
 
     return train_mask, val_mask
+
+
+def get_node_classification_data_full_edges(dataset_name: str, snapshot: int, task:str, ratio: float = 0.0, val_ratio: float=0.8):
+    """
+    generate data for node classification task
+    :param dataset_name: str, dataset name
+    :param val_ratio: float, validation data ratio
+    :param test_ratio: float, test data ratio
+    :return: node_raw_features, edge_raw_features, (np.ndarray),
+            full_data, train_data, val_data, test_data, (Data object)
+    """
+    view, task = snapshot - 2, task.lower()
+
+    graph, idx_list = data_load(dataset=dataset_name, emb_size = 64)
+    node_raw_features, edge_raw_features = graph.pos
+    node_cls_num = np.unique(graph.y)
+
+    NODE_FEAT_DIM = EDGE_FEAT_DIM = 172
+    assert NODE_FEAT_DIM >= node_raw_features.shape[1], f'Node feature dimension in dataset {dataset_name} is bigger than {NODE_FEAT_DIM}!'
+    assert EDGE_FEAT_DIM >= edge_raw_features.shape[1], f'Edge feature dimension in dataset {dataset_name} is bigger than {EDGE_FEAT_DIM}!'
+    # padding the features of edges and nodes to the same dimension (172 for all the datasets)
+    if node_raw_features.shape[1] < NODE_FEAT_DIM:
+        node_zero_padding = np.zeros((node_raw_features.shape[0], NODE_FEAT_DIM - node_raw_features.shape[1]))
+        node_raw_features = np.concatenate([node_raw_features, node_zero_padding], axis=1)
+    if edge_raw_features.shape[1] < EDGE_FEAT_DIM:
+        edge_zero_padding = np.zeros((edge_raw_features.shape[0], EDGE_FEAT_DIM - edge_raw_features.shape[1]))
+        edge_raw_features = np.concatenate([edge_raw_features, edge_zero_padding], axis=1)
+    
+    graph.pos = node_raw_features, edge_raw_features
+    assert NODE_FEAT_DIM == node_raw_features.shape[1] and EDGE_FEAT_DIM == edge_raw_features.shape[1], 'Unaligned feature dimensions after feature padding!'
+    graph_list = Temporal_Splitting(graph).temporal_splitting(time_mode="view", snapshot=snapshot, views = view)
+    Data_list = list()
+    transformer = None
+    # global_label = graph.y.cpu().numpy() if isinstance(graph.y, torch.Tensor) else graph.y
+
+    seen_label_train_mask, seen_label_val_mask, seen_label_nn_val_mask, seen_test_label_mask = None, None, None, None
+    for idx in range(view-1):
+        # get the timestamp of validate and test set
+        temporal_graph = graph_list[idx]        
+        if task == "edge_disturb":
+            transformer = Edge_Distrub(ratio=ratio)
+            temporal_graph.edge_index, temporal_graph.edge_attr = transformer(temporal_graph)
+        full_data = to_TPPR_Data(temporal_graph, task="node")
+        
+        src_node_ids = full_data.src_node_ids.astype(np.longlong)
+        dst_node_ids = full_data.dst_node_ids.astype(np.longlong)
+        node_interact_times = full_data.node_interact_times.astype(np.float64)
+        edge_ids = full_data.edge_ids.astype(np.longlong)
+        labels = full_data.labels
+        hash_table = full_data.hash_table
+        
+        # transform the node ids to the refreshed, consistent node ids
+        new_old_node_match4label = np.vectorize(hash_table.get)(src_node_ids)
+        src_labels = labels[new_old_node_match4label]
+        new_old_node_match4label_dst = np.vectorize(hash_table.get)(dst_node_ids)
+        dst_labels = labels[new_old_node_match4label_dst]
+        ground_labels = np.concatenate([src_labels, dst_labels], axis=0).reshape(2, -1) # (2, num_edges)
+        
+        val_time = span_time_quantile(threshold=val_ratio, tsp=node_interact_times, dataset=dataset_name)
+        label_mask = np.ones_like(ground_labels, dtype=bool) # (2, num_edges)
+        # The setting of seed follows previous works
+        random.seed(2020)
+
+        train_mask = node_interact_times <= val_time
+        val_mask = node_interact_times>val_time # np.logical_and(node_interact_times <= test_time, node_interact_times > val_time)
+        val_label_mask = np.ones((2, val_mask.shape[0]), dtype=bool)
+
+        if task == "imbalance":
+            transformer = Imbalance_full(ratio=ratio, val_time=val_time, src_label=src_labels, dst_label=dst_labels)
+            train_mask, val_mask, nn_val_mask, label_mask, val_label_mask, nn_val_label_mask = transformer(temporal_graph)
+            
+            assert label_mask[:, train_mask].sum(axis=0).all() == val_label_mask[:, val_mask].sum(axis=0).all() == nn_val_label_mask[:, nn_val_mask].sum(axis=0).all()==1, \
+                "The label doesnt guarantee in every edge pair at least one side has a label during training."
+        elif task == "fsl":
+            transformer = Few_Shot_Learning(fsl_num=ratio, val_time=val_time, src_label=src_labels)
+
+        """
+        If imbalance activated, label_mask | val_label_mask | nn_val_label_mask will be used to filter the labels in shape of
+        [[seen, unseen]
+         [unseen, seen]  while in shape of (2, num_edges),
+         [unseen, seen]  however, this raised non-matched label_mask with src_node_ids and dst_node_ids
+        ]
+        in training batch processing, it take indices from LENGTH of src_node_ids not node indices, so we must 
+        ensure labels, and label_mask are in the same shape as src_node_ids and dst_node_ids
+        thus, mask should apply as train_mask to, shrink from (2, num_edges) to (2, train_num_edges), so that it aligns now
+        
+        attention, this structued also worked for imbalance non activated, at that moment label_mask will be all True
+        """
+        train_data = Data(src_node_ids=src_node_ids[train_mask], dst_node_ids=dst_node_ids[train_mask],
+                        node_interact_times=node_interact_times[train_mask],
+                        edge_ids=edge_ids[train_mask], hash_table=hash_table, labels=ground_labels[:, train_mask],
+                        true_seen_label_mask = label_mask[:, train_mask])
+        train_node = sorted(set(train_data.src_node_ids).union(train_data.dst_node_ids))
+        new_val_mask = (~np.isin(src_node_ids, train_node)) & (~np.isin(dst_node_ids, train_node))
+        new_val_label_mask = np.ones_like((new_val_mask.sum(), 2), dtype=bool)
+        if task == "imbalance":
+            new_val_mask = nn_val_mask
+            new_val_label_mask = nn_val_label_mask
+        
+        val_data = Data(src_node_ids=src_node_ids[val_mask], dst_node_ids=dst_node_ids[val_mask], hash_table=hash_table,
+                        node_interact_times=node_interact_times[val_mask], edge_ids=edge_ids[val_mask], labels=ground_labels[:, val_mask],
+                        true_seen_label_mask = val_label_mask[:, val_mask])
+        test_data = to_TPPR_Data(graph_list[idx+1], task="node")
+        
+        new_test_node = sorted(set(test_data.src_node_ids).union(test_data.dst_node_ids) - set(train_node))
+        new_test_mask = (~np.isin(test_data.src_node_ids, new_test_node)) & (~np.isin(test_data.dst_node_ids, new_test_node))
+        new_test_label_mask = np.ones((2, new_test_mask.shape[0]), dtype=bool)
+        
+        t1_new_old_node_match4label = np.vectorize(test_data.hash_table.get)(test_data.src_node_ids)
+        t1_new_old_node_match4label_dst = np.vectorize(test_data.hash_table.get)(test_data.dst_node_ids)
+        
+        test_src_labels = test_data.labels[t1_new_old_node_match4label]
+        test_dst_labels = test_data.labels[t1_new_old_node_match4label_dst]
+        test_labels = np.concatenate([test_src_labels, test_dst_labels], axis=0).reshape(2, -1) # (2, num_edges)
+        
+        test_data.labels, test_data.true_seen_label_mask = test_labels, new_test_label_mask
+        
+        new_val_data = Data(src_node_ids=src_node_ids[new_val_mask], dst_node_ids=dst_node_ids[new_val_mask],
+                        node_interact_times=node_interact_times[new_val_mask], edge_ids=edge_ids[new_val_mask], 
+                        hash_table=hash_table, labels=ground_labels[:, new_val_mask], true_seen_label_mask = new_val_label_mask[:, new_val_mask])
+        if task in ["imbalance", "edge_disturb"]:
+            new_test_mask, new_test_label_mask = transformer.test_processing(graph_list[idx+1], new_test_mask)
+        elif task == "fsl":
+            seen_test_label_mask = transformer.test_processing(graph_list[idx+1], new_test_mask)
+        
+        new_test_data = Data(src_node_ids=test_data.src_node_ids[new_test_mask], dst_node_ids=test_data.dst_node_ids[new_test_mask],
+                        node_interact_times=test_data.node_interact_times[new_test_mask], edge_ids=test_data.edge_ids[new_test_mask], 
+                        hash_table=test_data.hash_table, labels=test_labels[:, new_test_mask], true_seen_label_mask = new_test_label_mask[:, new_test_mask])
+
+        Data_list.append([full_data, train_data, val_data, test_data, new_val_data, new_test_data])
+    return node_cls_num, node_raw_features, edge_raw_features, Data_list

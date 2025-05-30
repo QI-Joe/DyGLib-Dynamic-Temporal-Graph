@@ -182,8 +182,10 @@ def evaluate_model_node_classification(model_name: str, model: nn.Module, neighb
             evaluate_data_indices = evaluate_data_indices.numpy()
             batch_src_node_ids, batch_dst_node_ids, batch_node_interact_times, batch_edge_ids, batch_labels = \
                 evaluate_data.src_node_ids[evaluate_data_indices],  evaluate_data.dst_node_ids[evaluate_data_indices], \
-                evaluate_data.node_interact_times[evaluate_data_indices], evaluate_data.edge_ids[evaluate_data_indices], evaluate_data.labels[evaluate_data_indices]
+                evaluate_data.node_interact_times[evaluate_data_indices], evaluate_data.edge_ids[evaluate_data_indices], evaluate_data.labels[:, evaluate_data_indices]
 
+            batch_full_node_masks = evaluate_data.true_seen_label_mask[:, evaluate_data_indices]
+            
             if model_name in ['TGAT', 'CAWN', 'TCL']:
                 # get temporal embedding of source and destination nodes
                 # two Tensors, with shape (batch_size, node_feat_dim)
@@ -221,9 +223,14 @@ def evaluate_model_node_classification(model_name: str, model: nn.Module, neighb
             else:
                 raise ValueError(f"Wrong value for model_name {model_name}!")
             # get predicted probabilities, shape (batch_size, )
-            predicts = model[1](x=batch_src_node_embeddings).squeeze(dim=-1).sigmoid()
-            labels = torch.from_numpy(batch_labels).float().to(predicts.device)
-
+            predicts = model[1](x=batch_src_node_embeddings) # .squeeze(dim=-1).sigmoid()
+            dst_predicts = model[1](x=batch_dst_node_embeddings) # .squeeze(dim=-1).sigmoid()
+            
+            batch_labels = batch_labels.flatten()
+            batch_label_mask = batch_full_node_masks.flatten()
+            predicts = torch.vstack([predicts, dst_predicts])[batch_label_mask]   
+            
+            labels = torch.from_numpy(batch_labels).long().to(predicts.device)[batch_label_mask]
             loss = loss_func(input=predicts, target=labels)
 
             evaluate_total_loss += loss.item()
